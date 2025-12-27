@@ -1,6 +1,6 @@
 # Fast Discrete Curvelet Transform (FDCT) in Python
 
-[![](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/lzepedanunez/fast_curvelet_transform/blob/main/notebooks/curvelet_demo.ipynb)
+[![](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Forgotten/fast_curvelet_transform/blob/main/notebooks/curvelet_demo.ipynb)
 
 An efficient, double-precision implementation of the Fast Discrete Curvelet Transform (FDCT) developed by Candès, Demanet, Donoho, and Ying, using the wrapping approach. The implementation is ported from [Gabriel Peyré's MATLAB Toolbox](https://github.com/gpeyre/matlab-toolboxes), where the curvelet transform code was originally [written](https://github.com/gpeyre/matlab-toolboxes/blob/master/toolbox_wavelets/perform_curvelet_transform.m) by Laurent Demanet.
 

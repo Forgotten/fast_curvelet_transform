@@ -1,7 +1,19 @@
+""" Fast Discrete Curvelet Transform (Wrapping)
+-------------------------------------------
+This module provides a Python implementation of the Fast Discrete Curvelet 
+Transform (FDCT) using the wrapping approach. 
+
+The transform is implemented as a semi-tight frame. It achieves directional 
+selectivity by partitioning the frequency domain into wedges. 'Wrapping' 
+is used to efficiently transition between a wedge (in the frequency plane) 
+and a rectangular block (suitable for FFT) while preserving the inner product.
+"""
 import numpy as np
 from scipy import fft
-from typing import List, Optional, Tuple, Union, Literal
+from typing import List, Tuple, Literal
 from dataclasses import dataclass
+
+
 
 @dataclass
 class CurveletOptions:
@@ -17,19 +29,22 @@ class CurveletOptions:
     dtype: Data type for the transform (default complex128).
   """
   is_real: bool = False
-  m: Optional[int] = None
-  n: Optional[int] = None
-  nbscales: Optional[int] = None
+  m: int | None = None
+  n: int | None = None
+  nbscales: int | None = None
   nbangles_coarse: int = 16
   finest: Literal["wavelets", "curvelets"] = "curvelets"
   dtype: np.dtype = np.complex128
 
 
-def fdct_wrapping_window(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def fdct_wrapping_window(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
   """Creates the two halves of a C^inf compactly supported window.
   
+  The window is designed to provide a smooth transition (partition of unity)
+  in the frequency domain. It satisfies wl^2 + wr^2 = 1.
+  
   Args:
-    x: Input coordinate array.
+    x: Input coordinate array in [0, 1].
     
   Returns:
     A tuple of (left_window, right_window).
@@ -82,7 +97,7 @@ def _get_low_high_pass_2d(
   n2: int,
   m2: float,
   wavelet_mode: bool = False
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
   """Utility to generate 2D lowpass and highpass filters.
   
   Args:
@@ -171,21 +186,27 @@ def fdct_wrapping(
   x: np.ndarray,
   is_real: bool = False,
   finest: Literal["wavelets", "curvelets"] = "curvelets",
-  nbscales: Optional[int] = None,
+  nbscales: int | None = None,
   nbangles_coarse: int = 16,
   dtype: np.dtype = np.complex128
 ) -> List[List[np.ndarray]]:
   """ Fast Discrete Curvelet Transform via wedge wrapping.
   
+  This implementation partitions the frequency domain into concentric squares 
+  (scales) and then into angular wedges. For each wedge, the frequency data 
+  is 'wrapped' onto a central rectangle and transformed back to the spatial 
+  domain via an Inverse FFT.
+  
   Args:
     x: Input image (2D NumPy array).
-    is_real: Whether the transform is real-valued.
-    finest: Type of the finest scale.
+    is_real: Whether the transform is real-valued (returns Hermitian symmetric coeffs).
+    finest: Type of the finest scale ('wavelets' for isotropic, 'curvelets' for directional).
     nbscales: Number of scales.
     nbangles_coarse: Number of angles at the coarsest level.
+    dtype: Numpy data type for calculations.
     
   Returns:
-    A list of lists containing curvelet coefficients.
+    A list of lists containing curvelet coefficients (j, l).
   """
   x = np.asarray(x, dtype=dtype if not is_real else np.real(np.zeros(1, dtype=dtype)).dtype)
   n1, n2 = x.shape
@@ -195,7 +216,7 @@ def fdct_wrapping(
     
   xf = fft.fftshift(fft.fft2(fft.ifftshift(x))) / np.sqrt(x.size)
   nbangles = get_nbangles(nbscales, nbangles_coarse, finest)
-  c_coeffs: List[List[Optional[np.ndarray]]] = [[None] * nbangles[j] for j in range(nbscales)]
+  c_coeffs: List[List[np.ndarray | None]] = [[None] * nbangles[j] for j in range(nbscales)]
   
   m1, m2 = n1 / 3.0, n2 / 3.0
   
@@ -232,10 +253,11 @@ def fdct_wrapping(
     x_hi[np.ix_(idx1, idx2)] = x_low_new * hipass
     x_low = x_low_new * lowpass_next
     
-    l_idx_total = 0
-    nbquadrants = 2 if is_real else 4
+    l_idx_total = 0 # Global angle index for the current scale.
+    nbquadrants = 2 if is_real else 4 # Only 2 quadrants needed for real signals (symmetry).
     nbangles_perquad = nbangles[j] // 4
     
+    # Process the frequency plane in quadrants (East, North, West, South).
     for quadrant in range(1, nbquadrants + 1):
       mh, mv = (m2, m1) if quadrant % 2 == 1 else (m1, m2)
       wedge_endpoints, wedge_midpoints = _get_wedge_end_mid_points(
@@ -253,12 +275,14 @@ def fdct_wrapping(
           c_coeffs[j][l_idx + nbangles[j] // 2] = (np.sqrt(2) * np.imag(coeffs)).astype(real_dtype)
 
       # 1. Left corner wedge.
-      curr_l = l_idx_total;
+      curr_l = l_idx_total
       l_idx_total += 1
       
       fwev = int(np.round(2 * np.floor(4 * mv) / (2 * nbangles_perquad) + 1))
       lcw = int(np.floor(4 * mv) - np.floor(mv) + np.ceil(fwev / 4.0))
       ww = int(wedge_endpoints[1] + wedge_endpoints[0] - 1)
+      # Frequency domain offsets for the periodic wrapping
+      # (f_r: row offset, f_c: col offset).
       f_r = int(np.floor(4 * mv) + 2 - np.ceil((lcw + 1) / 2.0) + \
             ((lcw + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
       f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
@@ -270,7 +294,10 @@ def fdct_wrapping(
 
       w_xx, w_yy = np.zeros_like(wdata, dtype=float), np.zeros_like(wdata, dtype=float)
       for r_idx, r in enumerate(y_c):
+        # Perform the actual 'wrapping' by calculating the corresponding column 
+        # indices in the frequency plane.
         cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
+        # 'adm' handles the coordinate mapping including possible shearing.
         adm = np.round(0.5 * (cols + 1 + np.abs(cols - 1))).astype(int)
         nr = 1 + np.mod(r - f_r, lcw)
         wdata[nr - 1, :] = x_hi[r - 1, adm - 1] * (cols > 0)
@@ -286,14 +313,19 @@ def fdct_wrapping(
       w_xx[mask_c] += 1
       c_c = c1_const + c2_const * ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv)) / \
              (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv)))
-      wl_l, _ = fdct_wrapping_window(c_c); _, wr_r = fdct_wrapping_window(c_r)
+      
+      # Build left and right windows.
+      wl_l, _ = fdct_wrapping_window(c_c)
+      _, wr_r = fdct_wrapping_window(c_r)
       process_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
 
-      # 2. Regular wedges.
+      # 2. Regular wedges (between the corners).
       length_wedge = int(np.floor(4 * mv) - np.floor(mv))
       signal_y = np.arange(1, length_wedge + 1)
       f_r = int(np.floor(4 * mv) + 2 - np.ceil((length_wedge + 1) / 2.0) + \
             ((length_wedge + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
+      
+      # Iterate through the directional wedges within the current quadrant.
       for subl in range(2, nbangles_perquad):
         
         # Current and global indices.
@@ -341,6 +373,8 @@ def fdct_wrapping(
             ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
       wdata = np.zeros((lcw, ww), dtype=np.complex128)
       w_xx, w_yy = np.zeros_like(wdata, dtype=float), np.zeros_like(wdata, dtype=float)
+      
+      # Aggregating the data.
       for r_idx, r in enumerate(y_c):
         cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
         adm = np.round(0.5 * (cols + 2 * np.floor(4 * mh) + 1 - np.abs(cols - (2 * np.floor(4 * mh) + 1)))).astype(int)
@@ -356,11 +390,19 @@ def fdct_wrapping(
       w_xx[mask_c] -= 1
       c_c = c1_const + c2_const * (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv))) / \
              ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv))
-      wl_l, _ = fdct_wrapping_window(c_l); _, wr_r = fdct_wrapping_window(c_c)
+      
+      # Build left and right windows.
+      wl_l, _ = fdct_wrapping_window(c_l)
+      _, wr_r = fdct_wrapping_window(c_c)
+
+      # Apply the window functions and then process the wrapped data.
       process_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
+
+      # Rotate the image for the next quadrant.
       if quadrant < nbquadrants:
         x_hi = np.rot90(x_hi)
 
+  # Compute the low-pass coefficients.
   c_coeffs[0][0] = fft.fftshift(fft.ifft2(fft.ifftshift(x_low))) * np.sqrt(x_low.size)
   if is_real:
     c_coeffs[0][0] = np.real(c_coeffs[0][0])
@@ -371,24 +413,30 @@ def fdct_wrapping(
 def ifdct_wrapping(
   c_coeffs: List[List[np.ndarray]],
   is_real: bool = False,
-  m_img: Optional[int] = None,
-  n_img: Optional[int] = None,
+  m_img: int | None = None,
+  n_img: int | None = None,
   dtype: np.dtype = np.complex128
 ) -> np.ndarray:
-  """
-  Inverse Fast Discrete Curvelet Transform via wedge wrapping.
+  """Inverse Fast Discrete Curvelet Transform via wedge wrapping.
+  
+  Reconstructs the spatial image by wrapping the coefficient spectra back 
+  into their respective frequency domain positions (wedges), summing them, 
+  and applying a final 2D Inverse FFT.
   
   Args:
     c_coeffs: Curvelet coefficients (list of lists of arrays).
     is_real: Whether the transform is real-valued.
-    m_img: Target image height.
-    n_img: Target image width.
+    m_img: Target image height (rows).
+    n_img: Target image width (columns).
+    dtype: Numpy data type for calculations.
     
   Returns:
     Reconstructed image as a NumPy array.
   """
   nbscales = len(c_coeffs)
+  # We determine whether the finest scale is a wavelet or a curvelet.
   finest: Literal["wavelets", "curvelets"] = "wavelets" if len(c_coeffs[-1]) == 1 else "curvelets"
+  # Determine the number of coarse angles.
   nbangles_coarse = len(c_coeffs[1]) if nbscales > 1 else 16
   nbangles = get_nbangles(nbscales, nbangles_coarse, finest)
   n1, n2 = (m_img, n_img) if (m_img and n_img) else c_coeffs[-1][0].shape
@@ -401,20 +449,25 @@ def ifdct_wrapping(
     xf = np.zeros((2 * int(np.floor(2 * m1)) + 1, 2 * int(np.floor(2 * m2)) + 1), dtype=complex_dtype)
     lowpass = np.outer(_get_lowpass_1d(n1, m1), _get_lowpass_1d(n2, m2))
     scales = range(nbscales - 1, 0, -1)
-  else:
+  elif finest == "wavelets":
     m1, m2 = m1 / 2.0, m2 / 2.0
     xf = np.zeros((2 * int(np.floor(2 * m1)) + 1, 2 * int(np.floor(2 * m2)) + 1), dtype=complex_dtype)
     lowpass = np.outer(_get_lowpass_1d(n1, m1, True), _get_lowpass_1d(n2, m2, True))
     hipass_finest = np.sqrt(np.maximum(0, 1 - lowpass**2))
     scales = range(nbscales - 2, 0, -1)
-    
+  else:
+    raise ValueError("Finest scale must be either 'wavelets' or 'curvelets'.")
+
   top_left_1 = top_left_2 = 1
   current_lowpass = lowpass
   
   for j in scales:
     m1, m2 = m1 / 2.0, m2 / 2.0
     lowpass_scale, hipass_scale = _get_low_high_pass_2d(n1, m1, n2, m2, True)
-    xj = np.zeros((2 * int(np.floor(4 * m1)) + 1, 2 * int(np.floor(4 * m2)) + 1), dtype=complex_dtype)
+    xj = np.zeros(
+      (2 * int(np.floor(4 * m1)) + 1, 2 * int(np.floor(4 * m2)) + 1),
+      dtype=complex_dtype
+    )
     
     nb_per = nbangles[j] // 4
     nbquadrants = 2 if is_real else 4
@@ -427,8 +480,15 @@ def ifdct_wrapping(
         if not is_real:
           x_coeff = c_coeffs[j][l_idx]
         else:
-          x_coeff = (c_coeffs[j][l_idx] + 1j * c_coeffs[j][l_idx + nbangles[j] // 2]) / np.sqrt(2.0)
-        return np.rot90(fft.fftshift(fft.fft2(fft.ifftshift(x_coeff))) / np.sqrt(x_coeff.size), quadrant - 1)
+          x_coeff = (
+            c_coeffs[j][l_idx] + 1j * c_coeffs[j][l_idx + nbangles[j] // 2]
+          ) / np.sqrt(2.0)
+        return np.rot90(
+          fft.fftshift(
+            fft.fft2(
+              fft.ifftshift(x_coeff)
+            )
+          ) / np.sqrt(x_coeff.size), quadrant - 1)
       
       fwev = int(np.round(2 * np.floor(4 * mv) / (2 * nb_per) + 1))
       lcw = int(np.floor(4 * mv) - np.floor(mv) + np.ceil(fwev / 4.0))
@@ -457,10 +517,15 @@ def ifdct_wrapping(
       w_xx[mask_c] += 1
       c_c = c1_const + c2_const * ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv)) / \
              (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv)))
-      wl_l, _ = fdct_wrapping_window(c_c); _, wr_r = fdct_wrapping_window(c_r)
+      
+      # Compute the wrapping windows.
+      wl_l, _ = fdct_wrapping_window(c_c)
+      _, wr_r = fdct_wrapping_window(c_r)
+      
+      # Compute the wrapped data.
       wdata = get_wrapped_data(l_idx_quad) * wl_l * wr_r
       
-      # Aggregating the data into x_j.
+      # Aggregating the wrapped data into x_j.
       for r_idx, r in enumerate(y_c):
         cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
         adm = np.round(0.5 * (cols + 1 + np.abs(cols - 1))).astype(int)
@@ -538,6 +603,9 @@ def ifdct_wrapping(
     current_lowpass = lowpass_scale
     
   if is_real:
+    # For real signals, we only computed the first two quadrants.
+    # The rest of the frequency domain is the Hermitian conjugate
+    # (flipped and conjugated).
     xf = np.rot90(xf, 2) + np.conj(xf)
 
   # Computing the coarsest scale. 

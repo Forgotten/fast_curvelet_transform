@@ -12,6 +12,7 @@ import numpy as np
 from scipy import fft
 from typing import List, Tuple, Literal
 from dataclasses import dataclass
+import functools
 
 
 
@@ -66,7 +67,11 @@ def fdct_wrapping_window(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
   normalization = np.sqrt(wl**2 + wr**2)
   return wl / normalization, wr / normalization
 
-def _get_lowpass_1d(n_size: int, m_size: float, wavelet_mode: bool = False) -> np.ndarray:
+def _get_lowpass_1d(
+  n_size: int,
+  m_size: float,
+  wavelet_mode: bool = False
+) -> np.ndarray:
   """Utility to generate 1D lowpass filters.
   
   Args:
@@ -123,7 +128,7 @@ def get_nbangles(
   nbangles_coarse: int,
   finest: Literal["wavelets", "curvelets"]
 ) -> np.ndarray:
-  """ Calculates the number of angles at each scale.
+  """Calculates the number of angles at each scale.
   
   Args:
     nbscales: Number of scales.
@@ -145,7 +150,7 @@ def get_nbangles(
 
 
 def _get_wedge_ticks(nbangles_perquad: int, m_horiz: float) -> np.ndarray:
-  """ Calculates wedge ticks for a quadrant.
+  """Calculates wedge ticks for a quadrant.
 
   Args:
     nbangles_perquad: Number of angles per quadrant.
@@ -167,7 +172,7 @@ def _get_wedge_ticks(nbangles_perquad: int, m_horiz: float) -> np.ndarray:
 
 
 def _get_wedge_end_mid_points(nbangles_perquad: int, m_horiz: float) -> np.ndarray:
-  """ Calculates wedge endpoints and midpoints for a quadrant.
+  """Calculates wedge endpoints and midpoints for a quadrant.
 
   Args:
     nbangles_perquad: Number of angles per quadrant.
@@ -181,6 +186,125 @@ def _get_wedge_end_mid_points(nbangles_perquad: int, m_horiz: float) -> np.ndarr
   wedge_midpoints = (wedge_endpoints[:-1] + wedge_endpoints[1:]) / 2.0
   return wedge_endpoints, wedge_midpoints
 
+def _wrap_data(
+  length_wedge: int,
+  ww: int,
+  l_l: np.ndarray,
+  f_c: int,
+  x_hi: np.ndarray,
+  f_r: int,
+  *,
+  type_wedge: Literal["regular", "left", "right"] = "regular",
+  mh: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Wraps data for a given wedge in one of the quadrants.
+
+  Args:
+    length_wedge: Length of the wedge.
+    ww: Width of the wedge.
+    l_l: Low-pass filter.
+    f_c: Center frequency.
+    x_hi: High-pass filtered image.
+    f_r: Reference frequency.
+    type_wedge: Type of wedge ("regular", "left", or "right").
+    mh: Number of rows in the image. Only needed for the right corner wedge.
+
+  Returns:
+    Tuple of (wdata, w_xx, w_yy).
+  """
+
+  if type_wedge == "right" and mh is None:
+    raise ValueError("mh must be provided for right corner wedge.")
+
+  wdata = np.zeros((length_wedge, ww), dtype=np.complex128)
+  w_xx, w_yy = np.zeros_like(wdata, dtype=float), np.zeros_like(wdata, dtype=float)
+  rows_wedge = np.arange(1, length_wedge + 1)
+
+  for r_idx, r in enumerate(rows_wedge):
+    # Perform the actual 'wrapping' by calculating the corresponding column 
+    # indices in the frequency plane.
+    cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
+    # 'adm' handles the coordinate mapping including possible shearing.
+    # 'mask' is used to handle the case where the column indices are out of bounds.
+    if type_wedge == "left":
+      adm = np.round(0.5 * (cols + 1 + np.abs(cols - 1))).astype(int)
+      mask = cols > 0
+    elif type_wedge == "right":
+      adm = np.round(
+        0.5 * (
+          cols + 2 * np.floor(4 * mh) + 1 - 
+          np.abs(cols - (2 * np.floor(4 * mh) + 1))
+          )
+        ).astype(int)
+      mask = cols <= 2 * np.floor(4 * mh) + 1
+    elif type_wedge == "regular": 
+      adm = cols
+      mask = np.ones_like(cols, dtype=bool)
+    else:
+      raise ValueError("Invalid type_wedge value.")
+
+    nr = 1 + np.mod(r - f_r, length_wedge)
+    wdata[nr - 1, :] = x_hi[r - 1, adm - 1] * mask
+    w_xx[nr - 1, :] = adm
+    w_yy[nr - 1, :] = r
+
+  return wdata, w_xx, w_yy
+
+
+def _compute_wrapped_data(subl: int,
+  length_wedge: int,
+  quadrant: int,
+  wedge_endpoints: np.ndarray,
+  wedge_midpoints: np.ndarray,
+  mh: float,
+  mv: float,
+  x_hi: np.ndarray,
+  f_r: int
+) -> np.ndarray:
+  """Computes wrapped data for a given wedge in one of the quadrants.
+
+  Args:
+    subl: Subl index.
+    length_wedge: Length of the wedge.
+    quadrant: Quadrant index.
+    wedge_endpoints: Wedge endpoints array.
+    wedge_midpoints: Wedge midpoints array.
+    mh: Horizontal size parameter.
+    mv: Vertical size parameter.
+    x_hi: High-pass filtered image.
+    f_r: Reference frequency.
+
+  Returns:
+    Wrapped data array.
+  """
+  
+  # Computing coordinates for wrapping.
+  rows_wedge = np.arange(1, length_wedge + 1)
+  ww = int(wedge_endpoints[subl] - wedge_endpoints[subl - 2] + 1)
+  sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[subl - 1]) / np.floor(4 * mv)
+  l_l = np.round(wedge_endpoints[subl - 2] + sl_w * (rows_wedge - 1)).astype(int)
+  f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
+        ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
+
+  # Wrapping the data.
+  wdata, w_xx, w_yy = _wrap_data(length_wedge, ww, l_l, f_c, x_hi, f_r, type_wedge="regular")
+
+  # Computes the slopes of the wedges.
+  slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 2]) / np.floor(4 * mv)
+  slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 1]) / np.floor(4 * mv)
+  
+  # Compute coordinates.
+  c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
+          (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
+  c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
+          (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
+  
+  # Compute window functions.
+  wl_l, _ = fdct_wrapping_window(c_l)
+  _, wr_r = fdct_wrapping_window(c_r)
+
+  return wdata * wl_l * wr_r
+
 
 def fdct_wrapping(
   x: np.ndarray,
@@ -190,7 +314,7 @@ def fdct_wrapping(
   nbangles_coarse: int = 16,
   dtype: np.dtype = np.complex128
 ) -> List[List[np.ndarray]]:
-  """ Fast Discrete Curvelet Transform via wedge wrapping.
+  """Fast Discrete Curvelet Transform via wedge wrapping.
   
   This implementation partitions the frequency domain into concentric squares 
   (scales) and then into angular wedges. For each wedge, the frequency data 
@@ -258,21 +382,37 @@ def fdct_wrapping(
     nbangles_perquad = nbangles[j] // 4
     
     # Process the frequency plane in quadrants (East, North, West, South).
+    # Here depending on the quadrant we rotate the data by 90 degrees, so we can
+    # apply the same transform to all quadrants.
     for quadrant in range(1, nbquadrants + 1):
       mh, mv = (m2, m1) if quadrant % 2 == 1 else (m1, m2)
       wedge_endpoints, wedge_midpoints = _get_wedge_end_mid_points(
         nbangles_perquad, mh
       )
       
-      def process_wrapped_data(data: np.ndarray, q: int, l_idx: int):
-        data_rot = np.rot90(data, -(q-1))
+      def compute_coeffs_from_wrapped_data(
+        wrapped_data: np.ndarray,
+        quadrant: int,
+        angle_idx: int
+      ) -> None:
+        """Process wrapped data for a given quadrant.
+        
+        Args:
+          wrapped_data: Input data to process.
+          quadrant: Quadrant index.
+          angle_idx: Angle index.
+
+        Returns:
+          None, but it updates the c_coeffs list in place.
+        """
+        data_rot = np.rot90(wrapped_data, -(quadrant-1))
         coeffs = fft.fftshift(fft.ifft2(fft.ifftshift(data_rot))) * np.sqrt(data_rot.size)
         if not is_real:
-          c_coeffs[j][l_idx] = coeffs.astype(dtype)
+          c_coeffs[j][angle_idx] = coeffs.astype(dtype)
         else:
           real_dtype = np.real(np.zeros(1, dtype=dtype)).dtype
-          c_coeffs[j][l_idx] = (np.sqrt(2) * np.real(coeffs)).astype(real_dtype)
-          c_coeffs[j][l_idx + nbangles[j] // 2] = (np.sqrt(2) * np.imag(coeffs)).astype(real_dtype)
+          c_coeffs[j][angle_idx] = (np.sqrt(2) * np.real(coeffs)).astype(real_dtype)
+          c_coeffs[j][angle_idx + nbangles[j] // 2] = (np.sqrt(2) * np.imag(coeffs)).astype(real_dtype)
 
       # 1. Left corner wedge.
       curr_l = l_idx_total
@@ -290,18 +430,9 @@ def fdct_wrapping(
       y_c = np.arange(1, lcw + 1)
       sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[0]) / np.floor(4 * mv)
       l_l = np.round(2 - wedge_endpoints[0] + sl_w * (y_c - 1)).astype(int)
-      wdata = np.zeros((lcw, ww), dtype=np.complex128)
 
-      w_xx, w_yy = np.zeros_like(wdata, dtype=float), np.zeros_like(wdata, dtype=float)
-      for r_idx, r in enumerate(y_c):
-        # Perform the actual 'wrapping' by calculating the corresponding column 
-        # indices in the frequency plane.
-        cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
-        # 'adm' handles the coordinate mapping including possible shearing.
-        adm = np.round(0.5 * (cols + 1 + np.abs(cols - 1))).astype(int)
-        nr = 1 + np.mod(r - f_r, lcw)
-        wdata[nr - 1, :] = x_hi[r - 1, adm - 1] * (cols > 0)
-        w_xx[nr - 1, :] = adm; w_yy[nr - 1, :] = r
+      # Wrap the data.
+      wdata, w_xx, w_yy = _wrap_data(lcw, ww, l_l, f_c, x_hi, f_r, type_wedge="left")
 
       slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[0]) / np.floor(4 * mv)
       c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[1] - wedge_endpoints[0]) * \
@@ -317,52 +448,39 @@ def fdct_wrapping(
       # Build left and right windows.
       wl_l, _ = fdct_wrapping_window(c_c)
       _, wr_r = fdct_wrapping_window(c_r)
-      process_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
+      compute_coeffs_from_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
 
       # 2. Regular wedges (between the corners).
       length_wedge = int(np.floor(4 * mv) - np.floor(mv))
-      signal_y = np.arange(1, length_wedge + 1)
       f_r = int(np.floor(4 * mv) + 2 - np.ceil((length_wedge + 1) / 2.0) + \
             ((length_wedge + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
       
+      # For the regular wedges, we can use partial application to avoid
+      # passing the same arguments multiple times.
+      _compute_wrapped_data_partial = functools.partial(
+        _compute_wrapped_data,
+        length_wedge=length_wedge,
+        quadrant=quadrant,
+        wedge_endpoints=wedge_endpoints,
+        wedge_midpoints=wedge_midpoints,
+        mh=mh,
+        mv=mv,
+        x_hi=x_hi,
+        f_r=f_r
+      )
+
       # Iterate through the directional wedges within the current quadrant.
       for subl in range(2, nbangles_perquad):
         
         # Current and global indices.
         curr_l = l_idx_total
         l_idx_total += 1
-        ww = int(wedge_endpoints[subl] - wedge_endpoints[subl - 2] + 1)
-        sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[subl - 1]) / np.floor(4 * mv)
-        l_l = np.round(wedge_endpoints[subl - 2] + sl_w * (signal_y - 1)).astype(int)
-        f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
-              ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
-        wdata = np.zeros((length_wedge, ww), dtype=np.complex128)
-        w_xx, w_yy = np.zeros_like(wdata, dtype=float), np.zeros_like(wdata, dtype=float)
         
-        # Aggregating the data.
-        for r_idx, r in enumerate(signal_y):
-          cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
-          nr = 1 + np.mod(r - f_r, length_wedge)
-          wdata[nr - 1, :] = x_hi[r - 1, cols - 1]
-          w_xx[nr - 1, :] = cols; w_yy[nr - 1, :] = r
+        # Compute wrapped data.
+        wdata = _compute_wrapped_data_partial(subl)
         
-        # Compute window functions.
-        # Compute the slopes of the wedges.
-        slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 2]) / np.floor(4 * mv)
-        slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 1]) / np.floor(4 * mv)
-        
-        # Compute coordinates.
-        c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
-               (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-        c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
-                (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-        
-        # Compute window functions.
-        wl_l, _ = fdct_wrapping_window(c_l)
-        _, wr_r = fdct_wrapping_window(c_r)
-
         # Apply the window functions and then process the wrapped data.
-        process_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
+        compute_coeffs_from_wrapped_data(wdata, quadrant, curr_l)
 
       # 3. Right corner wedge.
       curr_l = l_idx_total; l_idx_total += 1
@@ -371,16 +489,11 @@ def fdct_wrapping(
       l_l = np.round(wedge_endpoints[-2] + sl_w * (y_c - 1)).astype(int)
       f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
             ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
-      wdata = np.zeros((lcw, ww), dtype=np.complex128)
-      w_xx, w_yy = np.zeros_like(wdata, dtype=float), np.zeros_like(wdata, dtype=float)
+
+      wdata, w_xx, w_yy = _wrap_data(
+        lcw, ww, l_l, f_c, x_hi, f_r, type_wedge="right", mh=mh
+      )
       
-      # Aggregating the data.
-      for r_idx, r in enumerate(y_c):
-        cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
-        adm = np.round(0.5 * (cols + 2 * np.floor(4 * mh) + 1 - np.abs(cols - (2 * np.floor(4 * mh) + 1)))).astype(int)
-        nr = 1 + np.mod(r - f_r, lcw)
-        wdata[nr - 1, :] = x_hi[r - 1, adm - 1] * (cols <= 2 * np.floor(4 * mh) + 1)
-        w_xx[nr - 1, :] = adm; w_yy[nr - 1, :] = r
       slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[-1]) / np.floor(4 * mv)
       c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[-1] - wedge_endpoints[-2]) * \
              (w_xx - wedge_midpoints[-1] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
@@ -396,7 +509,7 @@ def fdct_wrapping(
       _, wr_r = fdct_wrapping_window(c_c)
 
       # Apply the window functions and then process the wrapped data.
-      process_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
+      compute_coeffs_from_wrapped_data(wdata * wl_l * wr_r, quadrant, curr_l)
 
       # Rotate the image for the next quadrant.
       if quadrant < nbquadrants:
@@ -505,7 +618,8 @@ def ifdct_wrapping(
         cols = l_l[r_idx] + np.mod(np.arange(ww) - (l_l[r_idx] - f_c), ww)
         adm = np.round(0.5 * (cols + 1 + np.abs(cols - 1))).astype(int)
         nr = 1 + np.mod(r - f_r, lcw)
-        w_xx[nr - 1, :] = adm; w_yy[nr - 1, :] = r
+        w_xx[nr - 1, :] = adm
+        w_yy[nr - 1, :] = r
         
       slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[0]) / np.floor(4 * mv)
       c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[1] - wedge_endpoints[0]) * \
@@ -537,6 +651,7 @@ def ifdct_wrapping(
       signal_y = np.arange(1, lw + 1)
       f_r = int(np.floor(4 * mv) + 2 - np.ceil((lw + 1) / 2.0) + \
             ((lw + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
+
       for subl in range(2, nb_per):
         ww = int(wedge_endpoints[subl] - wedge_endpoints[subl - 2] + 1)
         sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[subl - 1]) / np.floor(4 * mv)

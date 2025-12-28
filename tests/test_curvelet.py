@@ -5,9 +5,9 @@ from absl.testing import absltest
 from fast_curvelet_transform.curvelet import (
   fdct,
   ifdct,
-  CurveletOptions,
-  fdct_wrapping_window
+  CurveletOptions
 )
+from fast_curvelet_transform import curvelet_utils as cutils
 
 class TestCurvelet(parameterized.TestCase):
   """Unit tests for the Fast Discrete Curvelet Transform."""
@@ -15,7 +15,7 @@ class TestCurvelet(parameterized.TestCase):
   def test_window_properties(self):
     """Verify partition of unity and symmetry of the curvelet window."""
     x = np.linspace(0, 1, 100)
-    wl, wr = fdct_wrapping_window(x)
+    wl, wr = cutils.fdct_wrapping_window(x)
     
     # Check partition of unity: wl^2 + wr^2 = 1.
     np.testing.assert_allclose(wl**2 + wr**2, 1.0, atol=1e-12)

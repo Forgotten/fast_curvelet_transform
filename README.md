@@ -56,7 +56,7 @@ print(f"Error: {np.linalg.norm(x - x_rec) / np.linalg.norm(x)}")
 ## Running Tests
 
 ```bash
-PYTHONPATH=. pytest tests/test_curvelet.py
+python3 -m unittest tests/test_curvelet.py
 ```
 
 ## References

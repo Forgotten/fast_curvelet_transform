@@ -23,7 +23,8 @@ pip install .
 ## Structure
 
 - `fast_curvelet_transform/`: Core package containing the implementation.
-  - `curvelet.py`: Forward and inverse transform logic.
+  - `curvelet.py`: Forward and inverse transform high-level logic.
+  - `curvelet_utils.py`: Namespaced utility functions for mathematical and indexing operations.
 - `examples/`: Demonstration scripts.
   - `example_cameraman.py`: Basic usage example.
   - `example_filtering.py`: Advanced scale reconstruction and denoising.
@@ -56,7 +57,14 @@ print(f"Error: {np.linalg.norm(x - x_rec) / np.linalg.norm(x)}")
 ## Running Tests
 
 ```bash
+# Run core transform tests
 python3 -m unittest tests/test_curvelet.py
+
+# Run utility unit tests
+python3 -m unittest tests/test_curvelet_utils.py
+
+# Run all tests
+python3 -m unittest discover tests
 ```
 
 ## References

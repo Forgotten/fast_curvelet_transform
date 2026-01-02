@@ -160,39 +160,17 @@ def fdct_wrapping(
           c_coeffs[j][angle_idx + nbangles[j] // 2] = (np.sqrt(2) * np.imag(coeffs)).astype(real_dtype)
 
       # 1. Left corner wedge.
-      fwev = int(np.round(2 * np.floor(4 * mv) / (2 * nbangles_perquad) + 1))
-      lcw = int(np.floor(4 * mv) - np.floor(mv) + np.ceil(fwev / 4.0))
-      ww = int(wedge_endpoints[1] + wedge_endpoints[0] - 1)
-      # Frequency domain offsets for the periodic wrapping
-      # (f_r: row offset, f_c: col offset).
-      f_r = int(np.floor(4 * mv) + 2 - np.ceil((lcw + 1) / 2.0) + \
-            ((lcw + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
-      f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
-            ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
-      y_c = np.arange(1, lcw + 1)
-      sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[0]) / np.floor(4 * mv)
-      l_l = np.round(2 - wedge_endpoints[0] + sl_w * (y_c - 1)).astype(int)
-
-      # Wrap the data.
-      wdata, w_xx, w_yy = cutils.wrap_data(
-        lcw, ww, l_l, f_c, x_hi, f_r, type_wedge="left"
-        )
-
-      slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[0]) / np.floor(4 * mv)
-      c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[1] - wedge_endpoints[0]) * \
-            (w_xx - wedge_midpoints[0] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-      c2_const = 1.0 / (1.0 / (2 * np.floor(4 * mh) / (wedge_endpoints[0] - 1) - 1) + \
-            1.0 / (2 * np.floor(4 * mv) / (fwev - 1) - 1))
-      c1_const = c2_const / (2 * np.floor(4 * mv) / (fwev - 1) - 1)
-      mask_c = ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv) == 2)
-      w_xx[mask_c] += 1
-      c_c = c1_const + c2_const * ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv)) / \
-             (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv)))
-      
-      # Build left and right windows.
-      wl_l, _ = cutils.fdct_wrapping_window(c_c)
-      _, wr_r = cutils.fdct_wrapping_window(c_r)
-      compute_coeffs_from_wrapped_data(wdata * wl_l * wr_r, quadrant, l_idx)
+      # Compute wrapped data.
+      wdata = cutils.get_wrapped_filtered_data_left(
+        quadrant,
+        nbangles_perquad,
+        x_hi,
+        mv,
+        mh,
+        wedge_endpoints,
+        wedge_midpoints
+      )
+      compute_coeffs_from_wrapped_data(wdata, quadrant, l_idx)
 
       # Increment the angle index.
       l_idx += 1
@@ -206,14 +184,12 @@ def fdct_wrapping(
       # passing the same arguments multiple times.
       _compute_wrapped_data_partial = functools.partial(
         cutils.compute_wrapped_data,
-        length_wedge=length_wedge,
         quadrant=quadrant,
         wedge_endpoints=wedge_endpoints,
         wedge_midpoints=wedge_midpoints,
         mh=mh,
         mv=mv,
         x_hi=x_hi,
-        f_r=f_r
       )
 
       # Iterate through the directional wedges within the current quadrant.
@@ -229,32 +205,21 @@ def fdct_wrapping(
         l_idx += 1
 
       # 3. Right corner wedge.
-      ww = int(4 * np.floor(4 * mh) + 3 - wedge_endpoints[-1] - wedge_endpoints[-2])
-      sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[-1]) / np.floor(4 * mv)
-      l_l = np.round(wedge_endpoints[-2] + sl_w * (y_c - 1)).astype(int)
-      f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
-            ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
-
-      wdata, w_xx, w_yy = cutils.wrap_data(
-        lcw, ww, l_l, f_c, x_hi, f_r, type_wedge="right", mh=mh
+      
+      # Compute wrapped and filtered data.
+      wdata = cutils.get_wrapped_filtered_data_right(
+        quadrant,
+        nbangles_perquad,
+        x_hi,
+        f_r,
+        mv,
+        mh,
+        wedge_endpoints,
+        wedge_midpoints
       )
-      
-      slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[-1]) / np.floor(4 * mv)
-      c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[-1] - wedge_endpoints[-2]) * \
-             (w_xx - wedge_midpoints[-1] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-      c2_const = -1.0 / (2 * np.floor(4 * mh) / (wedge_endpoints[-1] - 1) - 1 + 1.0 / (2 * np.floor(4 * mv) / (fwev - 1) - 1))
-      c1_const = -c2_const * (2 * np.floor(4 * mh) / (wedge_endpoints[-1] - 1) - 1)
-      mask_c = ((w_xx - 1) / np.floor(4 * mh) == (w_yy - 1) / np.floor(4 * mv))
-      w_xx[mask_c] -= 1
-      c_c = c1_const + c2_const * (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv))) / \
-             ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv))
-      
-      # Build left and right windows.
-      wl_l, _ = cutils.fdct_wrapping_window(c_l)
-      _, wr_r = cutils.fdct_wrapping_window(c_c)
 
-      # Apply the window functions and then process the wrapped data.
-      compute_coeffs_from_wrapped_data(wdata * wl_l * wr_r, quadrant, l_idx)
+      # Process the wrapped data and store it in the c_coeffs list.
+      compute_coeffs_from_wrapped_data(wdata, quadrant, l_idx)
 
       # Rotate the image for the next quadrant.
       if quadrant < nbquadrants:

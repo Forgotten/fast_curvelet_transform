@@ -246,19 +246,26 @@ def apply_digital_coronara_filter(
 
 def compute_wrapped_data(
   subl: int,
-  length_wedge: int,
   quadrant: int,
   wedge_endpoints: np.ndarray,
   wedge_midpoints: np.ndarray,
   mh: float,
   mv: float,
   x_hi: np.ndarray,
-  f_r: int
 ) -> np.ndarray:
   """Computes wrapped data for a given wedge in one of the quadrants."""
   
   # Computing coordinates for wrapping.
+  
+  # Quantities that do not depend on the subl index.
+  # TODO: Perhaps we compute them once and pass them as arguments.
+  length_wedge = int(np.floor(4 * mv) - np.floor(mv))
   rows_wedge = np.arange(1, length_wedge + 1)
+  f_r = int(np.floor(4 * mv) + 2 - np.ceil((length_wedge + 1) / 2.0) + \
+            ((length_wedge + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
+  
+
+  # Quantities that depend on the subl index.
   ww = int(wedge_endpoints[subl] - wedge_endpoints[subl - 2] + 1)
   sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[subl - 1]) / np.floor(4 * mv)
   l_l = np.round(
@@ -367,3 +374,90 @@ def get_wedge_window_filters(
     _, wr_r = fdct_wrapping_window(c_r)
     
   return wl_l, wr_r
+
+
+def get_wrapped_filtered_data_right(
+  quadrant: int,
+  nbangles_perquad: int,
+  x_hi: np.ndarray,
+  f_r: int,
+  mv: float,
+  mh: float,
+  wedge_endpoints: np.ndarray,
+  wedge_midpoints: np.ndarray,
+) -> np.ndarray:
+
+  fwev = int(np.round(2 * np.floor(4 * mv) / (2 * nbangles_perquad) + 1))
+  lcw = int(np.floor(4 * mv) - np.floor(mv) + np.ceil(fwev / 4.0))
+
+  rows_wedge = np.arange(1, lcw + 1)
+  ww = int(4 * np.floor(4 * mh) + 3 - wedge_endpoints[-1] - wedge_endpoints[-2])
+  sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[-1]) / np.floor(4 * mv)
+  l_l = np.round(wedge_endpoints[-2] + sl_w * (rows_wedge - 1)).astype(int)
+  f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
+        ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
+
+  wdata, w_xx, w_yy = wrap_data(
+    lcw, ww, l_l, f_c, x_hi, f_r, type_wedge="right", mh=mh
+  )
+
+  slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[-1]) / np.floor(4 * mv)
+  c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[-1] - wedge_endpoints[-2]) * \
+         (w_xx - wedge_midpoints[-1] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
+  c2_const = -1.0 / (2 * np.floor(4 * mh) / (wedge_endpoints[-1] - 1) - 1 + 1.0 / (2 * np.floor(4 * mv) / (fwev - 1) - 1))
+  c1_const = -c2_const * (2 * np.floor(4 * mh) / (wedge_endpoints[-1] - 1) - 1)
+  mask_c = ((w_xx - 1) / np.floor(4 * mh) == (w_yy - 1) / np.floor(4 * mv))
+  w_xx[mask_c] -= 1
+  c_c = c1_const + c2_const * (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv))) / \
+         ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv))
+      
+  # Build left and right windows.
+  wl_l, _ = fdct_wrapping_window(c_l)
+  _, wr_r = fdct_wrapping_window(c_c)
+
+  return wdata * wl_l * wr_r
+
+
+def get_wrapped_filtered_data_left(
+  quadrant: int,
+  nbangles_perquad: int,
+  x_hi: np.ndarray,
+  mv: float,
+  mh: float,
+  wedge_endpoints: np.ndarray,
+  wedge_midpoints: np.ndarray,
+) -> np.ndarray:
+  fwev = int(np.round(2 * np.floor(4 * mv) / (2 * nbangles_perquad) + 1))
+  lcw = int(np.floor(4 * mv) - np.floor(mv) + np.ceil(fwev / 4.0))
+  ww = int(wedge_endpoints[1] + wedge_endpoints[0] - 1)
+  # Frequency domain offsets for the periodic wrapping
+  # (f_r: row offset, f_c: col offset).
+  f_r = int(np.floor(4 * mv) + 2 - np.ceil((lcw + 1) / 2.0) + \
+        ((lcw + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
+  f_c = int(np.floor(4 * mh) + 2 - np.ceil((ww + 1) / 2.0) + \
+        ((ww + 1) % 2) * (1 if (quadrant - 3) == (quadrant - 3) % 2 else 0))
+  rows_wedge = np.arange(1, lcw + 1)
+  sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[0]) / np.floor(4 * mv)
+  l_l = np.round(2 - wedge_endpoints[0] + sl_w * (rows_wedge - 1)).astype(int)
+
+  # Wrap the data.
+  wdata, w_xx, w_yy = wrap_data(
+    lcw, ww, l_l, f_c, x_hi, f_r, type_wedge="left"
+    )
+
+  slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[0]) / np.floor(4 * mv)
+  c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[1] - wedge_endpoints[0]) * \
+        (w_xx - wedge_midpoints[0] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
+  c2_const = 1.0 / (1.0 / (2 * np.floor(4 * mh) / (wedge_endpoints[0] - 1) - 1) + \
+        1.0 / (2 * np.floor(4 * mv) / (fwev - 1) - 1))
+  c1_const = c2_const / (2 * np.floor(4 * mv) / (fwev - 1) - 1)
+  mask_c = ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv) == 2)
+  w_xx[mask_c] += 1
+  c_c = c1_const + c2_const * ((w_xx - 1) / np.floor(4 * mh) - (w_yy - 1) / np.floor(4 * mv)) / \
+          (2 - ((w_xx - 1) / np.floor(4 * mh) + (w_yy - 1) / np.floor(4 * mv)))
+  
+  # Build left and right windows.
+  wl_l, _ = fdct_wrapping_window(c_c)
+  _, wr_r = fdct_wrapping_window(c_r)
+  
+  return wdata * wl_l * wr_r

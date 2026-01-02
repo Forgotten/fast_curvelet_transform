@@ -173,17 +173,16 @@ class TestCurveletUtils(parameterized.TestCase):
   def test_compute_wrapped_data(self):
     """Verify compute_wrapped_data logic."""
     subl = 3
-    length_wedge = 16
     quadrant = 1
     nbangles_perquad = 8
     mh, mv = 10.0, 10.0
     wedge_endpoints, wedge_midpoints = cutils.get_wedge_end_mid_points(nbangles_perquad, mh)
     x_hi = np.random.randn(81, 81) + 1j * np.random.randn(81, 81) # Size 2*floor(4*m)+1 = 81
-    f_r = 8
     
     wdata = cutils.compute_wrapped_data(
-      subl, length_wedge, quadrant, wedge_endpoints, wedge_midpoints, mh, mv, x_hi, f_r
+      subl, quadrant, wedge_endpoints, wedge_midpoints, mh, mv, x_hi
     )
+    length_wedge = int(np.floor(4 * mv) - np.floor(mv))
     
     # Check shape: length_wedge x ww
     # ww = int(wedge_endpoints[subl] - wedge_endpoints[subl-2] + 1)

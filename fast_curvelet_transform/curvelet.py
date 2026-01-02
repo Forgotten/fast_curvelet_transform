@@ -83,39 +83,25 @@ def fdct_wrapping(
   
   m1, m2 = n1 / 3.0, n2 / 3.0
   
+  # Computing the finest scale.
   if finest == "curvelets":
     # Finest scale is curvelets.
-    big_n1 = 2 * int(np.floor(2 * m1)) + 1
-    big_n2 = 2 * int(np.floor(2 * m2)) + 1
-    idx1 = np.mod(
-      np.floor(n1/2) - np.floor(2 * m1) + np.arange(big_n1), n1
-    ).astype(int)
-    idx2 = np.mod(
-      np.floor(n2/2) - np.floor(2 * m2) + np.arange(big_n2), n2
-    ).astype(int)
-    lowpass, _ = cutils.get_low_high_pass_2d(n1, m1, n2, m2)
-    x_low = xf[np.ix_(idx1, idx2)] * lowpass
+    x_low = cutils.curvelet_finest_level(n1, m1, n2, m2, xf)
     scales = range(nbscales - 1, 0, -1)
-  else:
+  elif finest == "wavelets":
     # Finest scale is wavelets.
     m1, m2 = m1 / 2.0, m2 / 2.0
-    lowpass, hipass = cutils.get_low_high_pass_2d(n1, m1, n2, m2, True)
-    idx1 = np.arange(
-      -int(np.floor(2 * m1)), int(np.floor(2 * m1)) + 1
-    ) + int(np.ceil((n1 + 1) / 2)) - 1
-    idx2 = np.arange(
-      -int(np.floor(2 * m2)), int(np.floor(2 * m2)) + 1
-    ) + int(np.ceil((n2 + 1) / 2)) - 1
-    
-    x_low = xf[np.ix_(idx1, idx2)] * lowpass
-    x_hi = xf.copy()
-    x_hi[np.ix_(idx1, idx2)] *= hipass
+    x_low, x_hi = cutils.wavelet_finest_level(n1, m1, n2, m2, xf)
+
     c_coeffs[nbscales - 1][0] = fft.fftshift(
       fft.ifft2(fft.ifftshift(x_hi))
     ) * np.sqrt(x_hi.size)
     if is_real:
       c_coeffs[nbscales - 1][0] = np.real(c_coeffs[nbscales - 1][0])
     scales = range(nbscales - 2, 0, -1)
+  else:
+    raise ValueError("Invalid finest scale type, it should be 'wavelets' or "
+      f"'curvelets', but got {finest}.")
 
   for j in scales:
     m1, m2 = m1 / 2.0, m2 / 2.0

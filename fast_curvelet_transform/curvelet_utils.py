@@ -120,6 +120,53 @@ def get_nbangles(
   return nbangles
 
 
+def curvelet_finest_level(
+    n1: int, m1: float, n2: int, m2: float, xf: np.ndarray) -> np.ndarray: 
+  big_n1 = 2 * int(np.floor(2 * m1)) + 1
+  big_n2 = 2 * int(np.floor(2 * m2)) + 1
+  idx1 = np.mod(
+    np.floor(n1/2) - np.floor(2 * m1) + np.arange(big_n1), n1
+  ).astype(int)
+  idx2 = np.mod(
+    np.floor(n2/2) - np.floor(2 * m2) + np.arange(big_n2), n2
+  ).astype(int)
+  lowpass, _ = get_low_high_pass_2d(n1, m1, n2, m2)
+  x_low = xf[np.ix_(idx1, idx2)] * lowpass
+  return x_low
+
+
+def wavelet_finest_level(
+    n1: int, m1: float, n2: int, m2: float, xf: np.ndarray) -> np.ndarray:
+  """Utility to generate the high and lowpass filters for the finest scale.
+
+  Here we consider the wavelet mode, where a wavelet is used a the finest scale. 
+
+  Args:
+    n1: Height size.
+    m1: Height lowpass cutoff.
+    n2: Width size.
+    m2: Width lowpass cutoff.
+    xf: Image in frequency domain.
+    
+  Returns:
+    A tuple of (lowpass_2d, highpass_2d) arrays.
+  """
+
+  lowpass, hipass = get_low_high_pass_2d(n1, m1, n2, m2, True)
+  idx1 = np.arange(
+    -int(np.floor(2 * m1)), int(np.floor(2 * m1)) + 1
+  ) + int(np.ceil((n1 + 1) / 2)) - 1
+  idx2 = np.arange(
+    -int(np.floor(2 * m2)), int(np.floor(2 * m2)) + 1
+  ) + int(np.ceil((n2 + 1) / 2)) - 1
+  
+  x_low = xf[np.ix_(idx1, idx2)] * lowpass
+  x_hi = xf.copy()
+  x_hi[np.ix_(idx1, idx2)] *= hipass
+  
+  return x_low, x_hi
+
+
 def get_wedge_ticks(nbangles_perquad: int, m_horiz: float) -> np.ndarray:
   """Calculates wedge ticks for a quadrant.
   

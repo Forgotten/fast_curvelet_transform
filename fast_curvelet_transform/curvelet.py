@@ -109,7 +109,10 @@ def fdct_wrapping(
     x_low, x_hi = cutils.apply_digital_coronara_filter(x_low, n1, n2, m1, m2)
     
     l_idx = 0 # Global angle index for the current scale.
-    nbquadrants = 2 if is_real else 4 # Only 2 quadrants needed for real signals (symmetry).
+
+    # Only 2 quadrants needed for real signals (symmetry).
+    nbquadrants = 2 if is_real else 4 
+    # Number of wedges per quadrant.
     nbangles_perquad = nbangles[j] // 4
     
     # Process the frequency plane in quadrants (East, North, West, South).
@@ -214,7 +217,8 @@ def fdct_wrapping(
       # Increment the angle index.
       l_idx += 1
 
-  # Compute the low-pass coefficients.
+  # Compute the coefficients at the lowest (coarsest) scale.
+  # The coarses scale is isotropic, so we only need one angle index.
   c_coeffs[0][0] = fft.fftshift(fft.ifft2(fft.ifftshift(x_low))) * np.sqrt(x_low.size)
   if is_real:
     c_coeffs[0][0] = np.real(c_coeffs[0][0])

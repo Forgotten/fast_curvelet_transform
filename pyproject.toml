@@ -22,6 +22,8 @@ dependencies = [
     "scipy",
     "scikit-image",
     "matplotlib",
+    "jax",
+    "jaxlib",
 ]
 
 [project.urls]

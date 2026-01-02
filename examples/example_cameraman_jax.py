@@ -9,6 +9,8 @@ from fast_curvelet_transform import (
     CurveletOptions
 )
 
+jax.config.update('jax_enable_x64', True)
+
 def run_jax_example():
     """Run a demonstration of the JAX Curvelet Transform implementation."""
     print("--- JAX Curvelet Transform Example (Cameraman) ---")
@@ -16,7 +18,7 @@ def run_jax_example():
     # Load cameraman image and convert to JAX array.
     image_np = data.camera().astype(np.float32) / 255.0
     # Downsample for speed.
-    image_np = image_np[::2, ::2]
+    image_np = image_np
     image = jnp.array(image_np)
     m, n = image.shape
     print(f"Loaded image of size {m}x{n}")

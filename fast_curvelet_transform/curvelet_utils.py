@@ -6,7 +6,8 @@ partitioning, windowing, and data wrapping used by the FDCT.
 import numpy as np
 from scipy import fft
 from typing import List, Tuple, Literal
-
+import jax.numpy as jnp
+import jax
 
 def fdct_wrapping_window(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
   """Creates the two halves of a C^inf compactly supported window.
@@ -35,6 +36,48 @@ def fdct_wrapping_window(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
   wl[x_safe >= 1] = 1
   
   normalization = np.sqrt(wl**2 + wr**2)
+  return wl / normalization, wr / normalization
+
+
+def fdct_wrapping_window_jax(x: jax.Array) -> tuple[jax.Array, jax.Array]:
+  """Creates the two halves of a C^inf compactly supported window.
+  
+  The window is designed to provide a smooth transition (partition of unity)
+  in the frequency domain. It satisfies wl^2 + wr^2 = 1.
+  Here we have a jax version of the function, which should be faster when fully
+  compiled.
+  
+  Args:
+    x: Input coordinate array in [0, 1].
+    
+  Returns:
+    A tuple of (left_window, right_window).
+  """
+  x = jnp.asarray(x, dtype=jnp.float64)
+  wr = jnp.zeros_like(x)
+  wl = jnp.zeros_like(x)
+  
+  x_safe = jnp.copy(x)
+  x_safe = jnp.where(jnp.abs(x_safe) < 2**-52, jnp.zeros_like(x_safe), x_safe)
+  
+  x_safe_mask = (x_safe > 0) & (x_safe < 1)
+  x_compute_safe = jnp.where(x_safe_mask, x_safe, 0.5 * jnp.ones_like(x_safe))
+
+  wr = jnp.where(
+    x_safe_mask,
+    jnp.exp(1 - 1 / (1 - jnp.exp(1 - 1 / x_compute_safe))),
+    wr
+  )
+  wr = jnp.where(x_safe <= 0, jnp.ones_like(wr), wr)
+  
+  wl = jnp.where(
+    x_safe_mask,
+    jnp.exp(1 - 1 / (1 - jnp.exp(1 - 1 / (1 - x_compute_safe)))),
+    wl
+  )
+  wl = jnp.where(x_safe >= 1, jnp.ones_like(wl), wl)
+
+  normalization = jnp.sqrt(jnp.square(wl) + jnp.square(wr))
   return wl / normalization, wr / normalization
 
 
@@ -311,7 +354,6 @@ def compute_wrapped_data(
   f_r = int(np.floor(4 * mv) + 2 - np.ceil((length_wedge + 1) / 2.0) + \
             ((length_wedge + 1) % 2) * (1 if (quadrant - 2) == (quadrant - 2) % 2 else 0))
   
-
   # Quantities that depend on the subl index.
   ww = int(wedge_endpoints[subl] - wedge_endpoints[subl - 2] + 1)
   sl_w = (np.floor(4 * mh) + 1 - wedge_endpoints[subl - 1]) / np.floor(4 * mv)
@@ -411,15 +453,49 @@ def get_wedge_window_filters(
     w_xx[1+np.mod(r-f_r, length_wedge)-1, :] = cols
     w_yy[1+np.mod(r-f_r, length_wedge)-1, :] = r
     
-    slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 2]) / np.floor(4 * mv)
-    c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
-            (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-    slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 1]) / np.floor(4 * mv)
-    c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
-            (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-    wl_l, _ = fdct_wrapping_window(c_l)
-    _, wr_r = fdct_wrapping_window(c_r)
+  slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 2]) / np.floor(4 * mv)
+  c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
+          (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
+  slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 1]) / np.floor(4 * mv)
+  c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
+          (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
+  wl_l, _ = fdct_wrapping_window(c_l)
+  _, wr_r = fdct_wrapping_window(c_r)
     
+  return wl_l, wr_r
+
+
+def get_wedge_window_filters_jax(
+  length_wedge: int,
+  subl: int,
+  l_l: jax.Array,
+  f_c: int,
+  f_r: int,
+  ww: int,
+  mv: float,
+  mh: float,
+  wedge_endpoints: jax.Array,
+  wedge_midpoints: jax.Array,
+  type_wedge: Literal["left", "right", "regular"] = "regular"
+) -> tuple[jax.Array, jax.Array]:
+  """Computes the window functions for the given wedge in JAX."""
+  w_xx, w_yy = jnp.zeros((length_wedge, ww)), jnp.zeros((length_wedge, ww))
+  rows_wedge = jnp.arange(1, length_wedge + 1)
+
+  for r_idx, r in enumerate(rows_wedge):
+    cols = l_l[r_idx] + jnp.mod(jnp.arange(ww) - (l_l[r_idx] - f_c), ww)
+    w_xx = w_xx.at[1+jnp.mod(r-f_r, length_wedge)-1, :].set(cols)
+    w_yy = w_yy.at[1+jnp.mod(r-f_r, length_wedge)-1, :].set(r)
+  
+  slope_wedge_left = (jnp.floor(4 * mh) + 1 - wedge_midpoints[subl - 2]) / jnp.floor(4 * mv)
+  c_l = 0.5 + jnp.floor(4 * mv) / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
+          (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (jnp.floor(4 * mv) + 1 - w_yy)
+  slope_wedge_right = (jnp.floor(4 * mh) + 1 - wedge_midpoints[subl - 1]) / jnp.floor(4 * mv)
+  c_r = 0.5 + jnp.floor(4 * mv) / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
+          (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (jnp.floor(4 * mv) + 1 - w_yy)
+  wl_l, _ = fdct_wrapping_window_jax(c_l)
+  _, wr_r = fdct_wrapping_window_jax(c_r)
+  
   return wl_l, wr_r
 
 

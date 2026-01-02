@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import data
+import time
 from fast_curvelet_transform.curvelet import fdct, ifdct, CurveletOptions
 
 def run_example():
@@ -25,15 +26,18 @@ def run_example():
   
   # 1. Forward Transform.
   print("Computing forward transform...")
+  start_time = time.time()
   c_coeffs = fdct(image, options)
-  
+  print(f"Forward transform took: {time.time() - start_time:.2f} seconds")
   # 2. Analyze coefficients.
   total_elements = sum(a.size for scale in c_coeffs for a in scale)
   print(f"Redundancy factor: {total_elements / image.size:.2f}")
   
   # 3. Inverse Transform.
   print("Computing inverse transform...")
+  start_time = time.time()
   recovered = ifdct(c_coeffs, options)
+  print(f"Inverse transform took: {time.time() - start_time:.2f} seconds")
   
   # 4. Verification.
   error = np.linalg.norm(image - recovered) / np.linalg.norm(image)

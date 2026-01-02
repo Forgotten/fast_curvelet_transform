@@ -1,3 +1,21 @@
+"""System for a simple implementation of the curvelet transform in jax. 
+
+This is a "brute force" implementation of the curvelet transform from the
+numpy code to fit a highly parallel version in jax. Here we create a bank or
+filters for each scale and wedge and then perform the transform in a
+vectorized manner. Here the filters are much larger than necessary and they
+have a large memory footprint.
+
+This approach is similar to the one used in the diffcurve library [1]. Although,
+instead of using the implementation from Matlab coming form the curvelet toolbox
+we use our own numpy implementation.
+
+References: 
+
+[1]: https://github.com/liutianlin0121/diffcurve
+
+"""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,24 +26,18 @@ from scipy import fft
 Array = jax.Array
 
 
-def numpy_perform_fft2(x: np.ndarray) -> np.ndarray:
+def np_fft2(x: np.ndarray) -> np.ndarray:
   """Computes the 2D FFT with correct shifting and normalization."""
   return fft.fftshift(fft.fft2(fft.ifftshift(x), norm='ortho'))
 
 
-def numpy_perform_ifft2(frequency_input: np.ndarray) -> np.ndarray:
-  """Computes the inverse 2D FFT with correct shifting and normalization."""
-  return fft.fftshift(fft.ifft2(fft.ifftshift(frequency_input),
-                                norm='ortho'))
-
-
-def jax_perform_fft2(spatial_input: Array) -> Array:
+def jax_fft2(spatial_input: Array) -> Array:
   """Computes the 2D FFT with correct shifting and normalization in jax."""
   return jnp.fft.fftshift(jnp.fft.fft2(jnp.fft.ifftshift(spatial_input),
                                        norm='ortho'))
 
 
-def jax_perform_ifft2(frequency_input: Array) -> Array:
+def jax_ifft2(frequency_input: Array) -> Array:
   """Computes the inverse 2D FFT with correct shifting and normalization"""
   return jnp.fft.fftshift(jnp.fft.ifft2(jnp.fft.ifftshift(frequency_input),
                                         norm='ortho'))
@@ -35,11 +47,7 @@ def jax_perform_ifft2(frequency_input: Array) -> Array:
 class CurveletSystem:
   """A JAX Pytree representing a curvelet system.
 
-  This is a "brute force" implementation of the curvelet transform from the
-  numpy code to fit a highly parallel version in jax. Here we create a bank or
-  filters for each scale and wedge and then perform the transform in a
-  vectorized manner. Here the filters are much larger than necessary and they
-  have a large memory footprint. 
+  This Pytree is used to store the curvelet waveforms and their dimensions.
 
   Attributes:
     waveforms: A JAX array containing all curvelet waveforms in the
@@ -70,9 +78,9 @@ class CurveletSystem:
     Returns:
       coeffs: curvelet coefficients [num_curvelets, m, n]
     """
-    x_freq = jax_perform_fft2(img)
+    x_freq = jax_fft2(img)
     conj_waveforms = jnp.conj(self.waveforms)
-    coeffs = jax_perform_ifft2(x_freq * conj_waveforms)
+    coeffs = jax_ifft2(x_freq * conj_waveforms)
     return coeffs
 
   def jax_ifdct_2d(self, coeffs: Array) -> Array:
@@ -85,12 +93,12 @@ class CurveletSystem:
       decomp: image decomposed in different scales and orientation in the
         curvelet basis [num_curvelets, m, n].
     """
-    coeffs_freq = jax_perform_fft2(coeffs)
+    coeffs_freq = jax_fft2(coeffs)
 
     # Correctly compute support size for each wedge.
     support_size = jnp.prod(self.dimensions, axis=1)
 
-    decomp = jax_perform_ifft2(
+    decomp = jax_ifft2(
       coeffs_freq * self.waveforms
     ) * jnp.expand_dims(support_size, [1, 2])
 
@@ -162,7 +170,7 @@ def get_curvelet_system(
       )
 
       # Transform to frequency domain.
-      out_freq = numpy_perform_fft2(out)
+      out_freq = np_fft2(out)
       all_scales_all_wedges_curvelet_coeffs.append(out_freq)
 
       # Restore to zero for the next iteration.

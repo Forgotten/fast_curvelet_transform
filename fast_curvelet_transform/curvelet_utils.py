@@ -55,7 +55,8 @@ def fdct_wrapping_window_jax(x: jax.Array) -> tuple[jax.Array, jax.Array]:
   Returns:
     A tuple of (left_window, right_window).
   """
-  x = jnp.asarray(x, dtype=jnp.float64)
+  # Use float32 or float64 depending on environment settings.
+  x = jnp.asarray(x)
   wr = jnp.zeros_like(x)
   wl = jnp.zeros_like(x)
   
@@ -518,7 +519,7 @@ def wrap_data_jax(
   *,
   type_wedge: Literal["regular", "left", "right"] = "regular",
   mh: int | None = None,
-  dtype_coord: Any = jnp.float64,
+  dtype_coord: Any = jnp.float32,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
   """Wraps data for a given wedge in one of the quadrants in JAX.
   
@@ -687,7 +688,7 @@ def compute_wrapped_data_jax(
   mh: float,
   mv: float,
   x_hi: jax.Array,
-  dtype_coord: Any = jnp.float64,
+  dtype_coord: Any = jnp.float32,
 ) -> jax.Array:
   """Computes wrapped data for a given wedge in one of the quadrants in JAX."""
   

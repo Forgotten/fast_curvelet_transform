@@ -106,7 +106,7 @@ def fdct_wrapping(
   for j in scales:
     m1, m2 = m1 / 2.0, m2 / 2.0
     # Localize the information around the Cartesian corona in frequency domain.
-    x_low, x_hi = cutils.apply_digital_coronara_filter(x_low, n1, n2, m1, m2)
+    x_low, x_hi = cutils.apply_digital_corona_filter(x_low, n1, n2, m1, m2)
     
     l_idx = 0 # Global angle index for the current scale.
 

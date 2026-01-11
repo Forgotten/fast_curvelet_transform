@@ -38,7 +38,6 @@ class CurveletOptions:
   dtype: np.dtype = np.complex128
 
 
-
 def fdct_wrapping(
   x: np.ndarray,
   is_real: bool = False,

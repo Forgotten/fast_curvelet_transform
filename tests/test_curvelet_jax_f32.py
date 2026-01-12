@@ -29,9 +29,10 @@ class TestCurveletJaxF32(parameterized.TestCase):
     # but here we use float32 for comparison to see if JAX handles it)
     coeffs_np = fdct_wrapping(x, is_real=is_real, finest=finest)
     
-    # JAX Version (should be float32/complex64)
+    # JAX Version (should be float32/complex64 if x64 is disabled)
     x_jax = jnp.array(x)
-    self.assertEqual(x_jax.dtype, jnp.float32 if is_real else jnp.complex64)
+    if not jax.config.read("jax_enable_x64"):
+      self.assertEqual(x_jax.dtype, jnp.float32 if is_real else jnp.complex64)
     
     coeffs_jax = fdct_wrapping_jax(x_jax, is_real=is_real, finest=finest)
     
@@ -68,8 +69,12 @@ class TestCurveletJaxF32(parameterized.TestCase):
     
     coeffs = jitted_fdct(x)
     self.assertIsInstance(coeffs, list)
-    # Check that it's float32
-    self.assertEqual(coeffs[0][0].dtype, jnp.float32)
+    # Check that it's float32 if x64 is disabled
+    if not jax.config.read("jax_enable_x64"):
+      self.assertEqual(coeffs[0][0].dtype, jnp.float32)
+    else:
+      # If x64 is enabled, it should be float64
+      self.assertEqual(coeffs[0][0].dtype, jnp.float64)
 
 if __name__ == "__main__":
   absltest.main()

@@ -558,17 +558,13 @@ def wrap_data_jax(
   row_indices = jnp.arange(length_wedge)
   data_at_orig_rows = x_hi[row_indices[:, None], adm - 1] * mask
   
-  # Target row permutation
-  target_rows = jnp.mod(row_indices + 1 - f_r, length_wedge)
-  
-  wdata = jnp.zeros((length_wedge, ww), dtype=x_hi.dtype)
-  wdata = wdata.at[target_rows].set(data_at_orig_rows)
-  
-  w_xx = jnp.zeros((length_wedge, ww), dtype=dtype_coord)
-  w_xx = w_xx.at[target_rows].set(adm.astype(dtype_coord))
-  
-  w_yy = jnp.zeros((length_wedge, ww), dtype=dtype_coord)
-  w_yy = w_yy.at[target_rows].set(rows_wedge[:, None].astype(dtype_coord))
+  # Target row cyclic shift instead of at[].set()
+  # Use jnp.roll for row permutation (cyclic shift)
+  shift = 1 - f_r
+  wdata = jnp.roll(data_at_orig_rows, shift, axis=0)
+  w_xx = jnp.roll(adm.astype(dtype_coord), shift, axis=0)
+  w_yy_shifted = jnp.roll(rows_wedge[:, None].astype(dtype_coord), shift, axis=0)
+  w_yy = jnp.broadcast_to(w_yy_shifted, (length_wedge, ww))
 
   return wdata, w_xx, w_yy
 
@@ -715,21 +711,64 @@ def compute_wrapped_data_jax(
     length_wedge, ww, l_l, f_c, x_hi, f_r, type_wedge="regular", dtype_coord=dtype_coord
   )
   
-  # Computes the slopes of the wedges.
-  slope_wedge_left = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 2]) / np.floor(4 * mv)
-  slope_wedge_right = (np.floor(4 * mh) + 1 - wedge_midpoints[subl - 1]) / np.floor(4 * mv)
-  
-  # Compute coordinates.
-  c_l = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
-          (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-  c_r = 0.5 + np.floor(4 * mv) / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
-          (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-  
-  # Compute window functions.
-  wl_l, _ = fdct_wrapping_window_jax(c_l)
-  _, wr_r = fdct_wrapping_window_jax(c_r)
+  # Compute window functions using the centralized helper.
+  wl_l, wr_r = get_wedge_window_filters_jax_from_coords(
+    w_xx, w_yy, subl, l_l, f_c, f_r, ww, mv, mh, wedge_endpoints, wedge_midpoints, type_wedge="regular"
+  )
   
   return wdata * wl_l * wr_r
+
+
+@functools.partial(
+  jax.jit,
+  static_argnames=("length_wedge", "ww", "f_r", "f_c", "dtype_coord")
+)
+def compute_regular_wedges_vectorized_jax(
+  l_ls: jax.Array,
+  mh_floor: float,
+  mv_floor: float,
+  wedge_endpoints: jax.Array,
+  wedge_midpoints: jax.Array,
+  x_hi: jax.Array,
+  length_wedge: int,
+  ww: int,
+  f_r: int,
+  f_c: int,
+  dtype_coord: Any = jnp.float32,
+) -> jax.Array:
+  """Computes all regular wedges in a quadrant using vmap."""
+  
+  # l_ls size: (nbangles_reg, length_wedge)
+  # wedge_endpoints size: (nbangles_perquad + 1)
+  # wedge_midpoints size: (nbangles_perquad + 1)
+  
+  def single_wedge_logic(l_l, ep_left_2, ep_left_1, ep_right, mp_left, mp_right, subl_idx):
+    # Wrapping
+    wdata, w_xx, w_yy = wrap_data_jax(
+      length_wedge, ww, l_l, f_c, x_hi, f_r, type_wedge="regular", dtype_coord=dtype_coord
+    )
+    
+    # Windowing using the centralized helper
+    wl_l, wr_r = get_wedge_window_filters_jax_from_coords(
+      w_xx, w_yy, subl_idx, l_l, f_c, f_r, ww, mv_floor/4.0, mh_floor/4.0, wedge_endpoints, wedge_midpoints, type_wedge="regular"
+    )
+    
+    return wdata * wl_l * wr_r
+
+  # nbangles_reg is inferred from l_ls.shape[0]
+  subl_indices = jnp.arange(2, l_ls.shape[0] + 2)
+  
+  res = jax.vmap(single_wedge_logic)(
+    l_ls,
+    wedge_endpoints[subl_indices - 2], # ep_left_2
+    wedge_endpoints[subl_indices - 1], # ep_left_1
+    wedge_endpoints[subl_indices],     # ep_right
+    wedge_midpoints[subl_indices - 2], # mp_left
+    wedge_midpoints[subl_indices - 1], # mp_right
+    subl_indices                       # subl_idx
+  )
+  
+  return res
 
 
 
@@ -873,8 +912,76 @@ def get_wedge_window_filters(
 @functools.partial(
   jax.jit,
   static_argnames=(
+    "f_c", "f_r", "ww",
+    "type_wedge"
+  )
+)
+def get_wedge_window_filters_jax_from_coords(
+  w_xx: jax.Array,
+  w_yy: jax.Array,
+  subl: int | jax.Array,
+  l_l: jax.Array,
+  f_c: int,
+  f_r: int,
+  ww: int,
+  mv: float,
+  mh: float,
+  wedge_endpoints: jax.Array | tuple[float, ...],
+  wedge_midpoints: jax.Array | tuple[float, ...],
+  type_wedge: Literal["left", "right", "regular"] = "regular"
+) -> tuple[jax.Array, jax.Array]:
+  """Computes the window functions for the given wedge in JAX using precomputed coordinates."""
+  
+  wedge_endpoints = jnp.array(wedge_endpoints)
+  wedge_midpoints = jnp.array(wedge_midpoints)
+  
+  mv_floor = jnp.floor(4 * mv)
+  mh_floor = jnp.floor(4 * mh)
+  
+  if type_wedge == "regular":
+    slope_wedge_left = (mh_floor + 1 - wedge_midpoints[subl - 2]) / mv_floor
+    c_l = 0.5 + mv_floor / (wedge_endpoints[subl - 1] - wedge_endpoints[subl - 2]) * \
+            (w_xx - wedge_midpoints[subl - 2] - slope_wedge_left * (w_yy - 1)) / (mv_floor + 1 - w_yy)
+    slope_wedge_right = (mh_floor + 1 - wedge_midpoints[subl - 1]) / mv_floor
+    c_r = 0.5 + mv_floor / (wedge_endpoints[subl] - wedge_endpoints[subl - 1]) * \
+            (w_xx - wedge_midpoints[subl - 1] - slope_wedge_right * (w_yy - 1)) / (mv_floor + 1 - w_yy)
+  elif type_wedge == "left":
+    fwev = jnp.round(2 * mv_floor / (2 * (len(wedge_endpoints)-1)) + 1)
+    slope_wedge_right = (mh_floor + 1 - wedge_midpoints[0]) / mv_floor
+    c_r = 0.5 + mv_floor / (wedge_endpoints[1] - wedge_endpoints[0]) * \
+            (w_xx - wedge_midpoints[0] - slope_wedge_right * (w_yy - 1)) / (mv_floor + 1 - w_yy)
+    c2_const = 1.0 / (1.0 / (2 * mh_floor / (wedge_endpoints[0] - 1) - 1) + \
+            1.0 / (2 * mv_floor / (fwev - 1) - 1))
+    c1_const = c2_const / (2 * mv_floor / (fwev - 1) - 1)
+    mask_c = ((w_xx - 1) / mh_floor + (w_yy - 1) / mv_floor == 2)
+    w_xx_mod = jnp.where(mask_c, w_xx + 1, w_xx)
+    c_l = c1_const + c2_const * ((w_xx_mod - 1) / mh_floor - (w_yy - 1) / mv_floor) / \
+            (2 - ((w_xx_mod - 1) / mh_floor + (w_yy - 1) / mv_floor))
+  elif type_wedge == "right":
+    fwev = jnp.round(2 * mv_floor / (2 * (len(wedge_endpoints)-1)) + 1)
+    slope_wedge_left = (mh_floor + 1 - wedge_midpoints[-1]) / mv_floor
+    c_l = 0.5 + mv_floor / (wedge_endpoints[-1] - wedge_endpoints[-2]) * \
+           (w_xx - wedge_midpoints[-1] - slope_wedge_left * (w_yy - 1)) / (mv_floor + 1 - w_yy)
+    c2_const = -1.0 / (2 * mh_floor / (wedge_endpoints[-1] - 1) - 1 + 1.0 / (2 * mv_floor / (fwev - 1) - 1))
+    c1_const = -c2_const * (2 * mh_floor / (wedge_endpoints[-1] - 1) - 1)
+    mask_c = ((w_xx - 1) / mh_floor == (w_yy - 1) / mv_floor)
+    w_xx_mod = jnp.where(mask_c, w_xx - 1, w_xx)
+    c_r = c1_const + c2_const * (2 - ((w_xx_mod - 1) / mh_floor + (w_yy - 1) / mv_floor)) / \
+           ((w_xx_mod - 1) / mh_floor - (w_yy - 1) / mv_floor)
+  else:
+    raise ValueError(f"Unknown type_wedge: {type_wedge}")
+
+  wl, _ = fdct_wrapping_window_jax(c_l)
+  _, wr = fdct_wrapping_window_jax(c_r)
+  
+  return wl, wr
+
+
+@functools.partial(
+  jax.jit,
+  static_argnames=(
     "length_wedge", "subl", "f_c", "f_r", "ww", "mv", "mh",
-    "wedge_endpoints", "wedge_midpoints", "type_wedge"
+    "type_wedge"
   )
 )
 def get_wedge_window_filters_jax(
@@ -891,24 +998,17 @@ def get_wedge_window_filters_jax(
   type_wedge: Literal["left", "right", "regular"] = "regular"
 ) -> tuple[jax.Array, jax.Array]:
   """Computes the window functions for the given wedge in JAX."""
-  w_xx, w_yy = jnp.zeros((length_wedge, ww)), jnp.zeros((length_wedge, ww))
-  rows_wedge = jnp.arange(1, length_wedge + 1)
+  # Use wrap_data_jax logic to get coordinates without dummy array.
+  xj_dummy = jnp.zeros((length_wedge, ww))
+  _, w_xx, w_yy = wrap_data_jax(
+    length_wedge, ww, l_l, f_c, xj_dummy, f_r, type_wedge=type_wedge, mh=mh
+  )
+  
+  return get_wedge_window_filters_jax_from_coords(
+    w_xx, w_yy, subl, l_l, f_c, f_r, ww, mv, mh, wedge_endpoints, wedge_midpoints, type_wedge
+  )
 
-  for r_idx, r in enumerate(rows_wedge):
-    cols = l_l[r_idx] + jnp.mod(jnp.arange(ww) - (l_l[r_idx] - f_c), ww)
-    w_xx = w_xx.at[1+jnp.mod(r-f_r, length_wedge)-1, :].set(cols)
-    w_yy = w_yy.at[1+jnp.mod(r-f_r, length_wedge)-1, :].set(r)
-  
-  slope_wedge_left = (np.floor(4 * mh) + 1 - np.array(wedge_midpoints)[subl - 2]) / np.floor(4 * mv)
-  c_l = 0.5 + np.floor(4 * mv) / (np.array(wedge_endpoints)[subl - 1] - np.array(wedge_endpoints)[subl - 2]) * \
-          (w_xx - np.array(wedge_midpoints)[subl - 2] - slope_wedge_left * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-  slope_wedge_right = (np.floor(4 * mh) + 1 - np.array(wedge_midpoints)[subl - 1]) / np.floor(4 * mv)
-  c_r = 0.5 + np.floor(4 * mv) / (np.array(wedge_endpoints)[subl] - np.array(wedge_endpoints)[subl - 1]) * \
-          (w_xx - np.array(wedge_midpoints)[subl - 1] - slope_wedge_right * (w_yy - 1)) / (np.floor(4 * mv) + 1 - w_yy)
-  wl_l, _ = fdct_wrapping_window_jax(c_l)
-  _, wr_r = fdct_wrapping_window_jax(c_r)
-  
-  return wl_l, wr_r
+
 
 
 def get_wrapped_filtered_data_right(
